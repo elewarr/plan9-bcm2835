@@ -42,4 +42,6 @@ enum {
 	ClkSdram,
 	ClkPixel,
 	ClkPwm,
+
+	TempDefault = 0,	/* Specification says "id should be 0" */
 };

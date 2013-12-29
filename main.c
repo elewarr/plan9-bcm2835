@@ -250,6 +250,7 @@ main(void)
 		for(;;)
 			;
 	}
+	print("board model: rev %d\n", getrevision());
 	trapinit();
 	clockinit();
 	printinit();
