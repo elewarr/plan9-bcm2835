@@ -39,8 +39,10 @@ extern ulong getclkrate(int);
 extern char* getconf(char*);
 extern char *getethermac(void);
 extern uint getfirmware(void);
+extern uint getrevision(void);
 extern int getpower(int);
 extern void getramsize(Confmem*);
+extern uint gettemp(int);
 extern u32int ifsrget(void);
 extern void irqenable(int, void (*)(Ureg*, void*), void*);
 #define intrenable(i, f, a, b, n) irqenable((i), (f), (a))

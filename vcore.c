@@ -33,12 +33,14 @@ enum {
 	TagResp		= 1<<31,
 
 	TagGetfwrev	= 0x00000001,
+	TagGetbrdrev	= 0x00010002,
 	TagGetmac	= 0x00010003,
 	TagGetram	= 0x00010005,
 	TagGetpower	= 0x00020001,
 	TagSetpower	= 0x00028001,
 		Powerwait	= 1<<1,
 	TagGetclkspd= 0x00030002,
+	TagGettemp	= 0x00030006,
 	TagFballoc	= 0x00040001,
 	TagFbfree	= 0x00048001,
 	TagFbblank	= 0x00040002,
@@ -264,6 +266,18 @@ getfirmware(void)
 }
 
 /*
+* Get board model
+*/
+uint
+getrevision(void)
+{
+	u32int buf[1];
+	if(vcreq(TagGetbrdrev, buf, 0, sizeof buf) != sizeof buf)
+		return 0;
+	return buf[0];
+}
+
+/*
  * Get ARM ram
  */
 void
@@ -288,5 +302,19 @@ getclkrate(int clkid)
 	buf[0] = clkid;
 	if(vcreq(TagGetclkspd, buf, sizeof(buf[0]), sizeof(buf)) != sizeof buf)
 		return 0;
+	return buf[1];
+}
+
+/*
+* Get temperature
+*/
+uint
+gettemp(int tempid)
+{
+	u32int buf[2];
+	buf[0] = tempid;
+	if(vcreq(TagGettemp, buf, sizeof(buf[0]), sizeof(buf)) != sizeof buf)
+		return 0;
+
 	return buf[1];
 }
