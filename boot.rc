@@ -7,7 +7,6 @@ bind '#d' /fd
 bind -a '#P' /dev
 bind -a '#t' /dev
 bind -a '#S' /dev
-bind -a '#G' /dev
 bind -a '#I' /net
 echo -n rpi >/dev/hostowner
 echo -n fdisk...

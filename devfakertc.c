@@ -13,13 +13,11 @@
 enum{
 	Qdir = 0,
 	Qrtc,
-	Qrtcdir,
 };
 
 Dirtab rtcdir[]={
 	".",	{Qdir, 0, QTDIR},	0,	0555,
 	"rtc",		{Qrtc, 0},	0,	0664,
-	"dirrtc",	{Qrtcdir, 0, QTDIR},	0,	0555,
 };
 
 extern ulong kerndate;
