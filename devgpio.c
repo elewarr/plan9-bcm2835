@@ -6,47 +6,85 @@
 #include "../port/error.h"
 
 // path:
-// 4 bits - generic file type (Qinctl, Qindata)
-// 4 bits - path (Qbcmpindir, Qboardpindir, , ...)
-// 8 bits - input number
+// 3 bits - generic file type (Qinctl, Qindata)
+// 3 bits - parent type
+// 3 bits - chosen scheme type (Qgeneric, Qbcm, Qboard, Qwpi)
+// 6 bits - input number
 
-#define INPUT_NUMBER(q)	(((q).path >> 8) & 0x00ff)
-#define PARENT_TYPE(q)		(((q).path >> 4) & 0x000f)
-#define FILE_TYPE(q)		((q).path & 0x000f)
-#define PATH(s, p, f)			(((s & 0xff) << 8) | ((p & 0x0f) << 4) | (f & 0x0f))
+#define PIN_TABLE_SIZE	32
+
+#define PIN_OFFSET		SCHEME_OFFSET + SCHEME_BITS
+#define PIN_BITS		6
+#define PIN_MASK		((1 << PIN_BITS) - 1)
+#define PIN_NUMBER(q)	(((q).path >> PIN_OFFSET) & PIN_MASK)
+
+#define SCHEME_OFFSET	PARENT_OFFSET + PARENT_BITS
+#define SCHEME_BITS	3
+#define SCHEME_MASK	((1 << SCHEME_BITS) - 1)
+#define SCHEME_TYPE(q)	(((q).path >> SCHEME_OFFSET) & SCHEME_MASK)
+
+#define PARENT_OFFSET	FILE_OFFSET + FILE_BITS
+#define PARENT_BITS	3
+#define PARENT_MASK	((1 << PARENT_BITS) - 1)
+#define PARENT_TYPE(q)	(((q).path >> PARENT_OFFSET) & PARENT_MASK)
+
+#define FILE_OFFSET	0
+#define FILE_BITS		3
+#define FILE_MASK		((1 << FILE_BITS) - 1)
+#define FILE_TYPE(q)	(((q).path >> FILE_OFFSET) & FILE_MASK)
+
+// pin is valid only when file is Qdata otherwise 0 is used
+#define PATH(pin, scheme, parent, file) \
+						((pin & PIN_MASK) << PIN_OFFSET) \
+						| ((scheme & SCHEME_MASK) << SCHEME_OFFSET) \
+						| ((parent & PARENT_MASK) << PARENT_OFFSET) \
+						| ((file & FILE_MASK) << FILE_OFFSET)
+
+static int dflag = 1;
+#define D(...)	if(dflag) print(__VA_ARGS__)
 
 enum {
+	// parent types
 	Qtopdir = 0,
 	Qgpiodir,
-	Qbcmdir,
-	Qboarddir,
-	Qwpidir,
+	// file types
+	Qdir,
 	Qdata,
+	Qctl,
+};
+enum {
+	// naming schemes
+	Qbcm,
+	Qboard,
+	Qwpi,
+	Qgeneric
 };
 
+
+// commands
 enum {
 	CMzero,
 	CMone,
+	CMscheme,
 	CMfunc,
 	CMpull,
 };
 
-Dirtab topdir = { "#G", {PATH(0, Qtopdir, 0), 0, QTDIR}, 0, 0555 }; 
-Dirtab gpiodir = { "gpio", {PATH(0, Qgpiodir, 0), 0, QTDIR}, 0, 0555 };
+Dirtab topdir = { "#G", {PATH(0, Qgeneric, Qtopdir, Qdir), 0, QTDIR}, 0, 0555 };
+Dirtab gpiodir = { "gpio", {PATH(0, Qgeneric, Qgpiodir, Qdir), 0, QTDIR}, 0, 0555 };
 
 Dirtab typedir[] = {
-	"bcm",	{ PATH(0, Qbcmdir, 0), 0, QTDIR }, 0, 0555,
-	"board",	{ PATH(0, Qboarddir, 0), 0, QTDIR }, 0, 0555,
-	"wpi",	{ PATH(0, Qwpidir, 0), 0, QTDIR }, 0, 0555,
-	"OK",	{ PATH(16, Qgpiodir, Qdata), 0, QTFILE }, 0, 0666,
+	"OK",	{ PATH(16, Qgeneric, Qgpiodir, Qdata), 0, QTFILE }, 0, 0666,
+	"ctl",	{ PATH(0, Qgeneric, Qgpiodir, Qctl), 0, QTFILE }, 0, 0666,
 };
 
 static
 Cmdtab gpiocmd[] = {
-	CMzero,		"0",			1,
-	CMone,		"1",			1,
-	CMfunc, 		"func",		2,
-	CMpull,		"pull",		2,
+	CMzero,		"0",		1,
+	CMone,		"1",		1,
+	CMscheme,	"scheme",	2,
+	CMfunc, 	"func",		3,
+	CMpull,		"pull",		3,
 };
 
 //
@@ -63,8 +101,7 @@ enum {
 	Ffunc3,
 };
 
-static
-char *funcname[] = {
+static char *funcname[] = {
 	"in", "out", "f5", "f4", "f0", "f1", "f2", "f3",
 };
 
@@ -76,88 +113,98 @@ enum {
 	Punk,
 };
 
-static
-char *pudname[] = {
+static char *pudname[] = {
 	"off", "down", "up",
 };
 
-static int *bcmtable;
+static int pinscheme;
+static int boardrev;
 
-static
-int bcmtableR1[] = { 
-	1, 1, 0, 0,	// 0-3
-	1, 0, 0, 1,	// 4-7
-	1, 1, 1, 1,	// 8-11
-	0, 0, 1, 1,	// 12-15
-	1, 1, 1, 0,	// 16-19
-	0, 1, 1, 1,	// 20-23
-	1, 1, 0, 0,	// 24-27
-	0, 0, 0, 0,	// 28-31
+static char *bcmtableR1[PIN_TABLE_SIZE] = {
+	"1", "2", 0, 0,			// 0-3
+	"4", 0, 0, "7",			// 4-7
+	"8", "9", "10", "11",	// 8-11
+	0, 0, "14", "15",		// 12-15
+	0, "17", "18", 0,		// 16-19
+	0, "21", "22", "23",	// 20-23
+	"24", "25", 0, 0,		// 24-27
+	0, 0, 0, 0,				// 28-31
 };
 
-static
-int bcmtableR2[] = { 
-	0, 0, 1, 1,	// 0-3
-	1, 0, 0, 1,	// 4-7
-	1, 1, 1, 1,	// 8-11
-	0, 0, 1, 1,	// 12-15
-	1, 1, 1, 0,	// 16-19
-	0, 0, 1, 1,	// 20-23
-	1, 1, 0, 1,	// 24-27
-	1, 1, 1, 1,	// 28-31
+static char *bcmtableR2[PIN_TABLE_SIZE] = {
+	0, 0, "2", "3",			// 0-3
+	"4", 0, 0, "7",			// 4-7
+	"8", "9", "10", "11",	// 8-11
+	0, 0, "14", "15",		// 12-15
+	0, "17", "18", 0,		// 16-19
+	0, 0, "22", "23",		// 20-23
+	"24", "25", 0, "27",	// 24-27
+	"28", "29", "30", "31",	// 28-31
 };
 
-static char **nametable;
+static char *boardtableR1[PIN_TABLE_SIZE] = {
+	"SDA", "SCL", 0, 0,				// 0-3
+	"GPIO7", 0, 0, "CE1",			// 4-7
+	"CE0", "MISO", "MOSI", "SCLK",	// 8-11
+	0, 0, "TxD", "RxD",				// 12-15
+	0, "GPIO0", "GPIO1", 0,			// 16-19
+	0, "GPIO2", "GPIO3", "GPIO4",	// 20-23
+	"GPIO5", "GPIO6", 0, 0,			// 24-27
+	0, 0, 0, 0,						// 28-31
+};
 
-static
-char *nametableR1[] = {
-	"SDA", "SCL", 0, 0,					// 0-3
+static char *boardtableR2[PIN_TABLE_SIZE] = {
+	0, 0, "SDA", "SCL",						// 0-3
 	"GPIO7", 0, 0, "CE1",					// 4-7
 	"CE0", "MISO", "MOSI", "SCLK",			// 8-11
-	0, 0, "TxD", "RxD",					// 12-15
-	0, "GPIO0", "GPIO1", 0,				// 16-19
-	0, "GPIO2", "GPIO3", "GPIO4",			// 20-23
-	"GPIO5", "GPIO6", 0, 0,				// 24-27
-	0, 0, 0, 0,							// 28-31
-};
-
-static
-char *nametableR2[] = {
-	0, 0, "SDA", "SCL",					// 0-3
-	"GPIO7", 0, 0, "CE1",					// 4-7
-	"CE0", "MISO", "MOSI", "SCLK",			// 8-11
-	0, 0, "TxD", "RxD",					// 12-15
-	0, "GPIO0", "GPIO1", 0,				// 16-19
-	0, 0, "GPIO3", "GPIO4",				// 20-23
+	0, 0, "TxD", "RxD",						// 12-15
+	0, "GPIO0", "GPIO1", 0,					// 16-19
+	0, 0, "GPIO3", "GPIO4",					// 20-23
 	"GPIO5", "GPIO6", 0, "GPIO2",			// 24-27
 	"GPIO8", "GPIO9", "GPIO10", "GPIO11",	// 28-31
 };
 
-static int *wpitable;
-
-static
-int wpitableR1[] = { 
-	8, 9, -1, -1,	// 0-3
-	7, -1, -1, 11,	// 4-7
-	10, 13, 12, 14,	// 8-11
-	-1, -1, 15, 16,	// 12-15
-	-1, 0, 1, -1,	// 16-19
-	-1, 2, 3, 4,	// 20-23
-	5, 6, -1, -1,	// 24-27
-	-1, -1, -1, -1,	// 28-31
+static char *wpitableR1[PIN_TABLE_SIZE] = {
+	"8", "9", 0, 0,			// 0-3
+	"7", 0, 0, "11",		// 4-7
+	"10", "13", "12", "14",	// 8-11
+	0, 0, "15", "16",		// 12-15
+	0, "0", "1", 0,			// 16-19
+	0, "2", "3", "4",		// 20-23
+	"5", "6", 0, 0,			// 24-27
+	0, 0, 0, 0,				// 28-31
 };
 
-static
-int wpitableR2[] = {
-	-1, -1, 8, 9,	// 0-3
-	7, -1, -1, 11,	// 4-7
-	10, 13, 12, 14,	// 8-11
-	-1, -1, 15, 16,	// 12-15
-	-1, 0, 1, -1,	// 16-19
-	-1, -1, 3, 4,	// 20-23
-	5, 6, -1, 2,	// 24-27
-	17, 18, 19, 20,	// 28-31
+static char *wpitableR2[PIN_TABLE_SIZE] = {
+	0, 0, "8", "9",			// 0-3
+	"7", 0, 0, "11",		// 4-7
+	"10", "13", "12", "14",	// 8-11
+	0, 0, "15", "16",		// 12-15
+	0, "0", "1", 0,			// 16-19
+	0, 0, "3", "4",			// 20-23
+	"5", "6", 0, "2",		// 24-27
+	"17", "18", "19", "20",	// 28-31
 };
+
+static char *schemename[] = {
+	"bcm", "board", "wpi",
+};
+
+static char**
+getpintable(void)
+{
+	switch(pinscheme)
+	{
+	case Qbcm:
+		return (boardrev>3)?bcmtableR2:bcmtableR1;
+	case Qboard:
+		return (boardrev>3)?boardtableR2:boardtableR1;
+	case Qwpi:
+		return (boardrev>3)?wpitableR2:wpitableR1;
+	default:
+		return nil;
+	}
+}
 
 // stolen from uartmini.c
 #define GPIOREGS	(VIRTIO+0x200000)
@@ -236,6 +283,7 @@ gpioin(uint pin)
 static void
 mkdeventry(Chan *c, Qid qid, Dirtab *tab, Dir *db)
 {
+//	D("mkdeventry: name=%s path=%llud\n", tab->name, tab->qid.path);
 	mkqid(&qid, tab->qid.path, tab->qid.vers, tab->qid.type);
 	devdir(c, qid, tab->name, tab->length, eve, tab->perm, db);
 }
@@ -244,23 +292,20 @@ static int
 gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 {
 	Qid qid;
-	int t;
-
+	int parent, scheme, l;
+	char **pintable = getpintable();
+	
 	qid.vers = 0;
-	t = PARENT_TYPE(c->qid);
-
+	parent = PARENT_TYPE(c->qid);
+	scheme = SCHEME_TYPE(c->qid);
+	
 	if(s == DEVDOTDOT)
 	{
-		switch(t)
+		switch(parent)
 		{
 		case Qtopdir:
 		case Qgpiodir:
 			mkdeventry(c, qid, &topdir, db);
-			break;
-		case Qbcmdir:
-		case Qboarddir:
-		case Qwpidir:
-			mkdeventry(c, qid, &gpiodir, db);
 			break;
 		default:
 			return -1;
@@ -268,7 +313,7 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 		return 1;
 	}
 
-	if(t == Qtopdir)
+	if(parent == Qtopdir)
 	{
 		switch(s)
 		{
@@ -279,65 +324,30 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 			return -1;
 		}
 		return 1;
-	} else
-	if(t == Qgpiodir)
+	}
+
+	if(scheme != Qgeneric && scheme != pinscheme)
 	{
-		if(s < nelem(typedir))
+		D("gpiogen: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
+		error(Enotconf);
+	}
+
+	if(parent == Qgpiodir)
+	{
+		l = nelem(typedir);
+		if(s < l)
 		{
 			mkdeventry(c, qid, &typedir[s], db);
-		}
-		else
+		} else if (s < l + PIN_TABLE_SIZE)
 		{
-			return -1;
-		}
-		return 1;
-	} else
-	if(t == Qbcmdir)
-	{
-		if(s < nelem(bcmtableR1))
-		{
-			if(bcmtable[s] == 0)
+			s -= l;
+			
+			if(pintable[s] == 0)
 			{
 				return 0;
 			}
-			mkqid(&qid, PATH(s, t, Qdata), 0, QTFILE);
-			snprint(up->genbuf, sizeof up->genbuf, "%d", s);
-			devdir(c, qid, up->genbuf, 0, eve, 0666, db);
-		}
-		else
-		{
-			return -1;
-		}
-		return 1;
-	} else
-	if(t == Qboarddir)
-	{
-		if(s < nelem(nametableR1))
-		{
-			if(nametable[s] == 0)
-			{
-				return 0;
-			}
-			mkqid(&qid, PATH(s, t, Qdata), 0, QTFILE);
-			snprint(up->genbuf, sizeof up->genbuf, "%s", nametable[s]);
-			devdir(c, qid, up->genbuf, 0, eve, 0666, db);
-		}
-		else
-		{
-			return -1;
-		}
-		return 1;
-	} else
-	if(t == Qwpidir)
-	{
-		if(s < nelem(wpitableR1))
-		{
-			if(wpitable[s] == -1)
-			{
-				return 0;
-			}
-			mkqid(&qid, PATH(s, t, Qdata), 0, QTFILE);
-			snprint(up->genbuf, sizeof up->genbuf, "%d", wpitable[s]);
+			mkqid(&qid, PATH(s, pinscheme, Qgpiodir, Qdata), 0, QTFILE);
+			snprint(up->genbuf, sizeof up->genbuf, "%s", pintable[s]);
 			devdir(c, qid, up->genbuf, 0, eve, 0666, db);
 		}
 		else
@@ -353,38 +363,8 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 static void
 gpioinit(void)
 {
-	if(nelem(bcmtableR2) != nelem(bcmtableR1))
-	{
-		panic("gpio: different BCM table sizes: %d vs %d", nelem(bcmtableR1), nelem(bcmtableR2));
-	}
-
-	if(nelem(nametableR2) != nelem(nametableR1))
-	{
-		panic("gpio: different name table sizes: %d vs %d", nelem(nametableR1), nelem(nametableR2));
-	}
-
-	if(nelem(wpitableR2) != nelem(wpitableR1))
-	{
-		panic("gpio: different Witing Pi table sizes: %d vs %d", nelem(wpitableR1), nelem(wpitableR2));
-	}
-
-	if((nelem(bcmtableR1) != nelem(nametableR1)) || (nelem(bcmtableR1) != nelem(wpitableR1)))
-	{
-		panic("gpio: different table sizes: %d vs %d vs %d", nelem(bcmtableR1), nelem(nametableR1), nelem(wpitableR1));
-	}
-
-	if(getrevision() & 0xff > 3)
-	{
-		bcmtable = bcmtableR2;
-		nametable = nametableR2;
-		wpitable = wpitableR2;
-	}
-	else
-	{
-		bcmtable = bcmtableR1;
-		nametable = nametableR1;
-		wpitable = wpitableR1;
-	}
+	boardrev= getrevision() & 0xff > 3;
+	pinscheme = Qboard;
 }
 
 static void
@@ -432,7 +412,7 @@ readdata(uint pin, char *buf, long n)
 static long
 gpioread(Chan *c, void *va, long n, vlong off)
 {
-	int t, j;
+	int type, j, scheme;
 	uint pin;
 	ulong offset;
 	char *a;
@@ -446,13 +426,24 @@ gpioread(Chan *c, void *va, long n, vlong off)
 		return devdirread(c, va, n, 0, 0, gpiogen);
 	}
 
-	t = FILE_TYPE(c->qid);
+	type = FILE_TYPE(c->qid);
+	scheme = SCHEME_TYPE(c->qid);
+	
+	if(scheme != Qgeneric && scheme != pinscheme)
+	{
+		D("gpioread: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
+		error(Enotconf);
+	}
 
-	switch(t)
+	switch(type)
 	{
 	case Qdata:
-		pin = INPUT_NUMBER(c->qid);
+		D("gpioread: Qdata\n");
+		pin = PIN_NUMBER(c->qid);
+		D("gpioread: pin=%d\n", pin);
 		j = readdata(pin, up->genbuf, sizeof up->genbuf);
+		break;
+	case Qctl:
 		break;
 	}
 
@@ -465,13 +456,34 @@ gpioread(Chan *c, void *va, long n, vlong off)
 		n = j - offset;
 	}
 	memmove(a, &up->genbuf[offset], n);
+	
 	return n;
+}
+
+static int
+getpin(char *pinname)
+{
+	int i;
+	char **pintable = getpintable();
+	for(i = 0; i < PIN_TABLE_SIZE; i++)
+	{
+		if(!pintable[i])
+		{
+			continue;
+		}
+		if(strncmp(pintable[i], pinname, strlen(pintable[i])) == 0)
+		{
+			return i;
+		}
+	}
+	return -1;
 }
 
 static long
 gpiowrite(Chan *c, void *va, long n, vlong)
 {
-	int t, i;
+	D("gpiowrite:\n");
+	int type, i, scheme;
 	uint pin;
 	char *arg;
 
@@ -483,29 +495,77 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 		error(Eisdir);
 	}
 
-	t = FILE_TYPE(c->qid);
-	switch(t)
+	type = FILE_TYPE(c->qid);
+	D("gpiowrite: type=%d\n", type);
+
+	scheme = SCHEME_TYPE(c->qid);
+	
+	if(scheme != Qgeneric && scheme != pinscheme)
+	{
+		D("gpiowrite: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
+		error(Enotconf);
+	}
+
+	cb = parsecmd(va, n);
+	if(waserror())
+	{
+		free(cb);
+		nexterror();
+	}
+	ct = lookupcmd(cb, gpiocmd,  nelem(gpiocmd));
+	if(ct == nil)
+	{
+		error(Ebadctl);
+	}
+	D("gpiowrite: command index=%d\n", ct->index);
+	
+	switch(type)
 	{
 	case Qdata:
-		pin = INPUT_NUMBER(c->qid);
-		cb = parsecmd(va, n);
-		if(waserror())
-		{
-			free(cb);
-			nexterror();
-		}
-		ct = lookupcmd(cb, gpiocmd,  nelem(gpiocmd));
+		D("gpiowrite: Qdata\n");
+		pin = PIN_NUMBER(c->qid);
+		D("gpiowrite: pin=%d\n", pin);
 
 		switch(ct->index)
 		{
 		case CMzero:
+			D("gpiowrite: CMzero\n");
 			gpioout(pin, 0);
 			break;
 		case CMone:
+			D("gpiowrite: CMone\n");
 			gpioout(pin, 1);
 			break;
-		case CMfunc:
+		default:
+			error(Ebadctl);
+		}
+		break;
+	case Qctl:
+		D("gpiowrite: Qctl\n");
+		switch(ct->index)
+		{
+		case CMscheme:
+			D("gpiowrite: CMscheme\n");
 			arg = cb->f[1];
+			for(i = 0; i < nelem(schemename); i++)
+			{
+				if(strncmp(schemename[i], arg, strlen(schemename[i])) == 0)
+				{
+					pinscheme = i;
+					break;
+				}
+			}
+			break;
+		case CMfunc:
+			D("gpiowrite: CMfunc\n");
+			D("gpiowrite: arg1=%s\n", cb->f[1]);
+			D("gpiowrite: arg2=%s\n", cb->f[2]);
+			pin = getpin(cb->f[1]);
+			D("gpiowrite: pin=%d\n", pin);
+			arg = cb->f[2];
+			if(pin == -1) {
+				error(Ebadctl);
+			}
 			for(i = 0; i < nelem(funcname); i++)
 			{
 				if(strncmp(funcname[i], arg, strlen(funcname[i])) == 0)
@@ -516,7 +576,13 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 			}
 			break;
 		case CMpull:
-			arg = cb->f[1];
+			D("gpiowrite: CMpull\n");
+			pin = getpin(cb->f[1]);
+			D("gpiowrite: pin=%d\n", pin);
+			if(pin == -1) {
+				error(Ebadctl);
+			}
+			arg = cb->f[2];
 			for(i = 0; i < nelem(pudname); i++)
 			{
 				if(strncmp(pudname[i], arg, strlen(pudname[i])) == 0)
@@ -526,10 +592,15 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 				}
 			}
 			break;
+		default:
+			error(Ebadctl);
 		}
-		poperror();
-		free(cb);
+		break;
 	}
+	
+	free(cb);
+
+	poperror();
 	return n;
 }
 
