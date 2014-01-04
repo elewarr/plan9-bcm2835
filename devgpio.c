@@ -40,7 +40,7 @@
 						| ((parent & PARENT_MASK) << PARENT_OFFSET) \
 						| ((file & FILE_MASK) << FILE_OFFSET)
 
-static int dflag = 1;
+static int dflag = 0;
 #define D(...)	if(dflag) print(__VA_ARGS__)
 
 enum {
@@ -283,7 +283,6 @@ gpioin(uint pin)
 static void
 mkdeventry(Chan *c, Qid qid, Dirtab *tab, Dir *db)
 {
-//	D("mkdeventry: name=%s path=%llud\n", tab->name, tab->qid.path);
 	mkqid(&qid, tab->qid.path, tab->qid.vers, tab->qid.type);
 	devdir(c, qid, tab->name, tab->length, eve, tab->perm, db);
 }
@@ -328,7 +327,6 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 
 	if(scheme != Qgeneric && scheme != pinscheme)
 	{
-		D("gpiogen: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
 		error(Enotconf);
 	}
 
@@ -401,26 +399,14 @@ gpioclose(Chan *)
 { }
 
 static long
-readdata(uint pin, char *buf, long n)
-{
-	snprint(
-		buf, n,
-		"%d", gpioin(pin));
-	return strlen(buf);
-}
-
-static long
 gpioread(Chan *c, void *va, long n, vlong off)
 {
-	int type, j, scheme;
-	uint pin;
-	ulong offset;
+	int type, scheme;
+	uint pin, val;
 	char *a;
-
+	
 	a = va;
-	offset = off;
-	j = 0;
-
+	
 	if(c->qid.type & QTDIR)
 	{
 		return devdirread(c, va, n, 0, 0, gpiogen);
@@ -431,32 +417,26 @@ gpioread(Chan *c, void *va, long n, vlong off)
 	
 	if(scheme != Qgeneric && scheme != pinscheme)
 	{
-		D("gpioread: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
 		error(Enotconf);
 	}
 
 	switch(type)
 	{
 	case Qdata:
-		D("gpioread: Qdata\n");
+		if(off >= 1)
+		{
+			return 0;
+		}
+
 		pin = PIN_NUMBER(c->qid);
-		D("gpioread: pin=%d\n", pin);
-		j = readdata(pin, up->genbuf, sizeof up->genbuf);
+		val = gpioin(pin);
+		a[off] = (val)?'1':'0';
+		n = 1;
 		break;
 	case Qctl:
 		break;
 	}
 
-	if(off >= j)
-	{
-		return 0;
-	} else
-	if(offset + n > j)
-	{
-		n = j - offset;
-	}
-	memmove(a, &up->genbuf[offset], n);
-	
 	return n;
 }
 
@@ -482,7 +462,6 @@ getpin(char *pinname)
 static long
 gpiowrite(Chan *c, void *va, long n, vlong)
 {
-	D("gpiowrite:\n");
 	int type, i, scheme;
 	uint pin;
 	char *arg;
@@ -496,13 +475,11 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 	}
 
 	type = FILE_TYPE(c->qid);
-	D("gpiowrite: type=%d\n", type);
 
 	scheme = SCHEME_TYPE(c->qid);
 	
 	if(scheme != Qgeneric && scheme != pinscheme)
 	{
-		D("gpiowrite: scheme=%d, pinscheme=%d, generic=%d, path=%llud\n", scheme, pinscheme, Qgeneric, c->qid.path);
 		error(Enotconf);
 	}
 
@@ -517,23 +494,18 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 	{
 		error(Ebadctl);
 	}
-	D("gpiowrite: command index=%d\n", ct->index);
 	
 	switch(type)
 	{
 	case Qdata:
-		D("gpiowrite: Qdata\n");
 		pin = PIN_NUMBER(c->qid);
-		D("gpiowrite: pin=%d\n", pin);
 
 		switch(ct->index)
 		{
 		case CMzero:
-			D("gpiowrite: CMzero\n");
 			gpioout(pin, 0);
 			break;
 		case CMone:
-			D("gpiowrite: CMone\n");
 			gpioout(pin, 1);
 			break;
 		default:
@@ -541,11 +513,9 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 		}
 		break;
 	case Qctl:
-		D("gpiowrite: Qctl\n");
 		switch(ct->index)
 		{
 		case CMscheme:
-			D("gpiowrite: CMscheme\n");
 			arg = cb->f[1];
 			for(i = 0; i < nelem(schemename); i++)
 			{
@@ -557,11 +527,7 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 			}
 			break;
 		case CMfunc:
-			D("gpiowrite: CMfunc\n");
-			D("gpiowrite: arg1=%s\n", cb->f[1]);
-			D("gpiowrite: arg2=%s\n", cb->f[2]);
 			pin = getpin(cb->f[1]);
-			D("gpiowrite: pin=%d\n", pin);
 			arg = cb->f[2];
 			if(pin == -1) {
 				error(Ebadctl);
@@ -576,9 +542,7 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 			}
 			break;
 		case CMpull:
-			D("gpiowrite: CMpull\n");
 			pin = getpin(cb->f[1]);
-			D("gpiowrite: pin=%d\n", pin);
 			if(pin == -1) {
 				error(Ebadctl);
 			}
