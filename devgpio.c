@@ -4,6 +4,7 @@
 #include "dat.h"
 #include "fns.h"
 #include "../port/error.h"
+#include "io.h"
 
 // path:
 // 3 bits - generic file type (Qinctl, Qindata)
@@ -40,6 +41,9 @@
 						| ((parent & PARENT_MASK) << PARENT_OFFSET) \
 						| ((file & FILE_MASK) << FILE_OFFSET)
 
+#define SET_BIT(f, offset, value) \
+	(*f = ((*f & ~(1 << (offset % 32))) | (value << (offset % 32))))
+
 static int dflag = 0;
 #define D(...)	if(dflag) print(__VA_ARGS__)
 
@@ -51,6 +55,7 @@ enum {
 	Qdir,
 	Qdata,
 	Qctl,
+	Qevent,
 };
 enum {
 	// naming schemes
@@ -68,24 +73,38 @@ enum {
 	CMscheme,
 	CMfunc,
 	CMpull,
+	CMevent,
 };
 
+// dev entries
 Dirtab topdir = { "#G", {PATH(0, Qgeneric, Qtopdir, Qdir), 0, QTDIR}, 0, 0555 };
 Dirtab gpiodir = { "gpio", {PATH(0, Qgeneric, Qgpiodir, Qdir), 0, QTDIR}, 0, 0555 };
 
 Dirtab typedir[] = {
 	"OK",	{ PATH(16, Qgeneric, Qgpiodir, Qdata), 0, QTFILE }, 0, 0666,
 	"ctl",	{ PATH(0, Qgeneric, Qgpiodir, Qctl), 0, QTFILE }, 0, 0666,
+	"event",	{ PATH(0, Qgeneric, Qgpiodir, Qevent), 0, QTFILE }, 0, 0444,
 };
 
+// commands definition
 static
 Cmdtab gpiocmd[] = {
 	CMzero,		"0",		1,
 	CMone,		"1",		1,
 	CMscheme,	"scheme",	2,
-	CMfunc, 	"func",		3,
+	CMfunc, 	"function",	3,
 	CMpull,		"pull",		3,
+	CMevent,	"event",	4,
 };
+
+static int pinscheme;
+static int boardrev;
+
+static Rendez rend;
+//static Queue *eventq;
+static u32int eventvalue;
+static long eventinuse;
+static Lock eventlock;
 
 //
 // BCM
@@ -102,23 +121,31 @@ enum {
 };
 
 static char *funcname[] = {
-	"in", "out", "f5", "f4", "f0", "f1", "f2", "f3",
+	"in", "out", "5", "4", "0", "1", "2", "3",
 };
 
 enum {
 	Poff = 0,
 	Pdown,
 	Pup,
-	Prsrvd,
-	Punk,
 };
 
 static char *pudname[] = {
 	"off", "down", "up",
 };
 
-static int pinscheme;
-static int boardrev;
+static char *evstatename[] = {
+	"disable", "enable",
+};
+
+enum {
+	Erising,
+	Efalling,
+};
+
+static char *evtypename[] = {
+	"edge-rising", "edge-falling",
+};
 
 static char *bcmtableR1[PIN_TABLE_SIZE] = {
 	"1", "2", 0, 0,			// 0-3
@@ -215,6 +242,13 @@ enum {
 	Set0	= 0x1c>>2,
 	Clr0	= 0x28>>2,
 	Lev0	= 0x34>>2,
+	Evds0	= 0x40>>2,
+	Redge0	= 0x4C>>2,
+	Fedge0	= 0x58>>2,
+	Hpin0	= 0x64>>2,
+	Lpin0	= 0x70>>2,
+	ARedge0	= 0x7C>>2,
+	AFedge0	= 0x88>2,
 	PUD	= 0x94>>2,
 	PUDclk0	= 0x98>>2,
 	PUDclk1	= 0x9c>>2,
@@ -263,11 +297,12 @@ gpiopullset(uint pin, int state)
 static void
 gpioout(uint pin, int set)
 {
-	u32int *gp;
+	u32int *gp, *field;
 	int v;
 
 	gp = (u32int*)GPIOREGS;
 	v = set? Set0 : Clr0;
+	field = &gp[v + pin/32];
 	gp[v + pin/32] = 1 << (pin % 32);
 }
 
@@ -278,6 +313,28 @@ gpioin(uint pin)
 
 	gp = (u32int*)GPIOREGS;
 	return (gp[Lev0 + pin/32] & (1 << (pin % 32))) != 0;
+}
+
+static void
+gpioevent(uint pin, int event, int enable)
+{
+	u32int *gp, *field;
+	int reg = 0;
+	
+	switch(event)
+	{
+		case Erising:
+			reg = Redge0;
+			break;
+		case Efalling:
+			reg = Fedge0;
+			break;
+		default:
+			panic("gpio: unknown event type");
+	}
+	gp = (u32int*)GPIOREGS;
+	field = &gp[reg + pin/32];
+	SET_BIT(field, pin, enable);
 }
 
 static void
@@ -322,7 +379,7 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 		default:
 			return -1;
 		}
-		return 1;
+	return 1;
 	}
 
 	if(scheme != Qgeneric && scheme != pinscheme)
@@ -359,16 +416,51 @@ gpiogen(Chan *c, char *, Dirtab *, int , int s, Dir *db)
 }
 
 static void
+interrupt(Ureg*, void *)
+{
+	
+	u32int *gp, *field;
+	char pin;
+	
+	gp = (u32int*)GPIOREGS;
+
+	int set;
+
+	coherence();
+	
+	eventvalue = 0;
+	
+	for(pin = 0; pin < PIN_TABLE_SIZE; pin++)
+	{
+		set = (gp[Evds0 + pin/32] & (1 << (pin % 32))) != 0;
+
+		if(set)
+		{
+			field = &gp[Evds0 + pin/32];
+			SET_BIT(field, pin, 1);
+			SET_BIT(&eventvalue, pin, 1);
+//			if(eventq != nil && !qisclosed(eventq)){
+//				qiwrite(eventq, &pin, 1);
+//			}
+
+		}
+	}
+	coherence();
+
+	wakeup(&rend);
+}
+
+static void
 gpioinit(void)
 {
 	boardrev= getrevision() & 0xff > 3;
 	pinscheme = Qboard;
+	intrenable(IRQgpio1, interrupt, nil, 0, "gpio1");
 }
 
 static void
 gpioshutdown(void)
-{
-}
+{ }
 
 static Chan*
 gpioattach(char *spec)
@@ -391,12 +483,69 @@ gpiostat(Chan *c, uchar *db, int n)
 static Chan*
 gpioopen(Chan *c, int omode)
 {
-	return devopen(c, omode, 0, 0, gpiogen);
+	int type;
+	
+	c = devopen(c, omode, 0, 0, gpiogen);
+	
+	type = FILE_TYPE(c->qid);
+	
+	switch(type)
+	{
+	case Qdata:
+		c->iounit = 1;
+		break;
+	case Qctl:
+		break;
+	case Qevent:
+		lock(&eventlock);
+		if(eventinuse != 0){
+			c->flag &= ~COPEN;
+			unlock(&eventlock);
+			error(Einuse);
+		}
+		eventinuse = 1;
+		unlock(&eventlock);
+//		if(eventq == nil){
+//			eventq = qopen(1*1024, Qcoalesce, 0, 0);
+//			if(eventq == nil){
+//				c->flag &= ~COPEN;
+//				error(Enomem);
+//			}
+//			qnoblock(eventq, 1);
+//		}else
+//			qreopen(eventq);
+		eventvalue = 0;
+		c->iounit = 4;
+	}
+
+	return c;
 }
 
 static void
-gpioclose(Chan *)
-{ }
+gpioclose(Chan *c)
+{
+	int type;
+	type = FILE_TYPE(c->qid);
+	
+	switch(type)
+	{
+	case Qevent:
+		if(c->flag & COPEN)
+		{
+			if(c->flag & COPEN){
+				eventinuse = 0;
+//				qhangup(eventq, nil);
+			}
+		}
+		break;
+	}
+}
+
+static int
+isset(void *)
+{
+	return eventvalue;
+}
 
 static long
 gpioread(Chan *c, void *va, long n, vlong off)
@@ -423,18 +572,27 @@ gpioread(Chan *c, void *va, long n, vlong off)
 	switch(type)
 	{
 	case Qdata:
-		if(off >= 1)
+		if(off)
 		{
 			return 0;
 		}
 
 		pin = PIN_NUMBER(c->qid);
-		val = gpioin(pin);
-		a[off] = (val)?'1':'0';
+		a[0] = gpioin(pin);
 		n = 1;
 		break;
 	case Qctl:
 		break;
+	case Qevent:
+//		return qread(eventq, va, n);
+		sleep(&rend, isset, 0);
+		if(n < 4)
+		{
+			panic("gpio: buffer size too small");
+		}
+		n = 4;
+		memmove(va, &eventvalue, n);
+		eventvalue = 0;
 	}
 
 	return n;
@@ -527,8 +685,8 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 			}
 			break;
 		case CMfunc:
-			pin = getpin(cb->f[1]);
-			arg = cb->f[2];
+			pin = getpin(cb->f[2]);
+			arg = cb->f[1];
 			if(pin == -1) {
 				error(Ebadctl);
 			}
@@ -542,16 +700,32 @@ gpiowrite(Chan *c, void *va, long n, vlong)
 			}
 			break;
 		case CMpull:
-			pin = getpin(cb->f[1]);
+			pin = getpin(cb->f[2]);
 			if(pin == -1) {
 				error(Ebadctl);
 			}
-			arg = cb->f[2];
+			arg = cb->f[1];
 			for(i = 0; i < nelem(pudname); i++)
 			{
 				if(strncmp(pudname[i], arg, strlen(pudname[i])) == 0)
 				{
 					gpiopullset(pin, i);
+					break;
+				}
+			}
+			break;
+		case CMevent:
+			pin = getpin(cb->f[3]);
+			if(pin == -1) {
+				error(Ebadctl);
+			}
+				
+			arg = cb->f[1];
+			for(i = 0; i < nelem(evtypename); i++)
+			{
+				if(strncmp(evtypename[i], arg, strlen(evtypename[i])) == 0)
+				{
+					gpioevent(pin, i, (cb->f[2][0] == 'e'));
 					break;
 				}
 			}
