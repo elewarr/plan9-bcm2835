@@ -101,7 +101,6 @@ static int pinscheme;
 static int boardrev;
 
 static Rendez rend;
-//static Queue *eventq;
 static u32int eventvalue;
 static long eventinuse;
 static Lock eventlock;
@@ -297,12 +296,11 @@ gpiopullset(uint pin, int state)
 static void
 gpioout(uint pin, int set)
 {
-	u32int *gp, *field;
+	u32int *gp;
 	int v;
 
 	gp = (u32int*)GPIOREGS;
 	v = set? Set0 : Clr0;
-	field = &gp[v + pin/32];
 	gp[v + pin/32] = 1 << (pin % 32);
 }
 
@@ -439,10 +437,6 @@ interrupt(Ureg*, void *)
 			field = &gp[Evds0 + pin/32];
 			SET_BIT(field, pin, 1);
 			SET_BIT(&eventvalue, pin, 1);
-//			if(eventq != nil && !qisclosed(eventq)){
-//				qiwrite(eventq, &pin, 1);
-//			}
-
 		}
 	}
 	coherence();
@@ -505,15 +499,6 @@ gpioopen(Chan *c, int omode)
 		}
 		eventinuse = 1;
 		unlock(&eventlock);
-//		if(eventq == nil){
-//			eventq = qopen(1*1024, Qcoalesce, 0, 0);
-//			if(eventq == nil){
-//				c->flag &= ~COPEN;
-//				error(Enomem);
-//			}
-//			qnoblock(eventq, 1);
-//		}else
-//			qreopen(eventq);
 		eventvalue = 0;
 		c->iounit = 4;
 	}
@@ -534,7 +519,6 @@ gpioclose(Chan *c)
 		{
 			if(c->flag & COPEN){
 				eventinuse = 0;
-//				qhangup(eventq, nil);
 			}
 		}
 		break;
@@ -551,7 +535,7 @@ static long
 gpioread(Chan *c, void *va, long n, vlong off)
 {
 	int type, scheme;
-	uint pin, val;
+	uint pin;
 	char *a;
 	
 	a = va;
@@ -572,27 +556,25 @@ gpioread(Chan *c, void *va, long n, vlong off)
 	switch(type)
 	{
 	case Qdata:
-		if(off)
-		{
-			return 0;
-		}
-
 		pin = PIN_NUMBER(c->qid);
-		a[0] = gpioin(pin);
+		a[0] = (gpioin(pin))?'1':'0';
 		n = 1;
 		break;
 	case Qctl:
 		break;
 	case Qevent:
-//		return qread(eventq, va, n);
-		sleep(&rend, isset, 0);
-		if(n < 4)
+		if(off >= 4)
 		{
-			panic("gpio: buffer size too small");
+			off %= 4;
+			eventvalue = 0;
 		}
-		n = 4;
-		memmove(va, &eventvalue, n);
-		eventvalue = 0;
+		sleep(&rend, isset, 0);
+			
+		if(off + n > 4)
+		{
+			n = 4 - off;
+		}
+		memmove(a, &eventvalue + off, n);
 	}
 
 	return n;

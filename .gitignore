@@ -1,0 +1,11 @@
+*.5
+*.out
+9pi
+s9pi
+bootpi.c
+init.h
+pi.c
+pi.root.s
+pi.rootc.c
+reboot.h
+errstr.h
