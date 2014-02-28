@@ -18,5 +18,6 @@ echo event edge-rising disable GPIO0 > ctl
 echo event edge-falling enable GPIO0 > ctl
 echo pull up GPIO0 > ctl
 echo pull down GPIO0 > ctl
-cat /dev/gpio/event
+cat event
+cat GPIO0
 ```
