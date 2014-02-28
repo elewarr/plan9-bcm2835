@@ -21,3 +21,29 @@ echo pull down GPIO0 > ctl
 cat event
 cat GPIO0
 ```
+
+schemes
+=======
+```
+cpu% echo scheme bcm > ctl
+cpu% lc
+1		11		15		18		21		23		25		7		9		ctl
+10		14		17		2		22		24		4		8		OK		event
+cpu% 
+```
+
+```
+cpu% echo scheme board > ctl
+cpu% lc
+CE0		GPIO0	GPIO2	GPIO4	GPIO6	MISO	OK		SCL		SDA		ctl
+CE1		GPIO1	GPIO3	GPIO5	GPIO7	MOSI	RxD		SCLK	TxD		event
+cpu% 
+```
+
+```
+cpu% echo scheme wpi > ctl
+cpu% lc
+0		10		12		14		16		3		5		7		9		ctl
+1		11		13		15		2		4		6		8		OK		event
+cpu% 
+```
