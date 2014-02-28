@@ -447,7 +447,7 @@ interrupt(Ureg*, void *)
 static void
 gpioinit(void)
 {
-	boardrev= getrevision() & 0xff > 3;
+	boardrev = getrevision() & 0xff;
 	pinscheme = Qboard;
 	intrenable(IRQgpio1, interrupt, nil, 0, "gpio1");
 }
