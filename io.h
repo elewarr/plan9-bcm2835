@@ -9,6 +9,7 @@ enum {
 #define IRQDMA(chan)	(IRQdma0+(chan))
 	IRQaux		= 29,
 	IRQgpio1	= 49,
+	IRQspi		= 54,
 	IRQmmc		= 62,
 	IRQbasic	= 64,
 	IRQtimerArm	= IRQbasic + 0,

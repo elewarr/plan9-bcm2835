@@ -23,7 +23,7 @@ dev
 	sd
 	usb
 	ether	netif
-	gpio
+	bcm
 
 link
 	archbcm
