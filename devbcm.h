@@ -36,7 +36,7 @@
 #define SET_BIT(f, offset, value) \
 (*f = ((*f & ~(1 << (offset % 32))) | (value << (offset % 32))))
 
-static int dflag = 0;
+static int dflag = 1;
 
 #define D(...)	if(dflag) print(__VA_ARGS__)
 
@@ -90,8 +90,8 @@ Dirtab gpiodir[] = {
 };
 
 Dirtab spidir[] = {
-	"spi0",	{ PATH(0, Qgeneric, Qspidir, Qspi0), 0, QTFILE }, 0, 0666,
-	"spi1",	{ PATH(0, Qgeneric, Qspidir, Qspi1), 0, QTFILE }, 0, 0666,
+	"0",	{ PATH(0, Qgeneric, Qspidir, Qspi0), 0, QTFILE }, 0, 0666,
+	"1",	{ PATH(0, Qgeneric, Qspidir, Qspi1), 0, QTFILE }, 0, 0666,
 };
 
 // commands definition
@@ -102,7 +102,7 @@ Cmdtab ctlcmd[] = {
 	CMpull,		"pull",		3,
 	CMevent,	"event",	4,
 	CMclock,	"clock",	3,
-	CMmode, 	"mode",		2,
+	CMmode, 	"mode",		3,
 };
 
 static
@@ -120,12 +120,17 @@ static long gpioeventinuse;
 static Lock gpioeventlock;
 
 #define SPI_BUF_LEN 256
-static char spimode;
+#define SPI_DEVICES 2
+#define SPI_CLOCK_SPEED 250 * 1000 * 1000
+
 static u32int spibuflen = SPI_BUF_LEN;
-static u32int spitxoff[2];
-static u32int spirxoff[2];
-static u32int spitxlen[2];
-static u32int spirxlen[2];
+static u32int spitxoff[SPI_DEVICES];
+static u32int spirxoff[SPI_DEVICES];
+static u32int spitxlen[SPI_DEVICES];
+static u32int spirxlen[SPI_DEVICES];
+static u8int spimode[SPI_DEVICES];
+static u8int spiclockdiv[SPI_DEVICES];
+
 static u8int spitxbuf0[SPI_BUF_LEN];
 static u8int spitxbuf1[SPI_BUF_LEN];
 static u8int spirxbuf0[SPI_BUF_LEN];

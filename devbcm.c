@@ -73,7 +73,7 @@ bcmtopread(Chan *c, void *va, long n, vlong)
 static long
 bcmtopwrite(Chan *c, void *va, long n, vlong)
 {
-	int type, i, pin, mode;
+	int type, i, pin, mode, clock, divider, deviceno;
 	const char *arg;
 	
 	type = FILE_TYPE(c->qid);
@@ -156,23 +156,37 @@ bcmtopwrite(Chan *c, void *va, long n, vlong)
 					}
 				}
 				break;
+			case CMclock:
+				arg = cb->f[2];
+				deviceno = atoi(arg);
+
+				arg = cb->f[1];
+				clock = atoi(arg);
+
+				divider = SPI_CLOCK_SPEED / clock;
+				D("clock %d, using divider %d for device %d\n", clock, divider, deviceno);
+				spiclockdiv[deviceno] = divider;
+				break;
 			case CMmode:
+				arg = cb->f[2];
+				deviceno = atoi(arg);
+
 				arg = cb->f[1];
 				mode = atoi(arg);
-				
+				D("mode %d for device %d\n", mode, deviceno);
 				switch(mode)
 			{
 				case 0:
-					spimode = 0;
+					spimode[deviceno] = 0;
 					break;
 				case 1:
-					spimode = 0 | CPHAfield;
+					spimode[deviceno] = 0 | CPHAfield;
 					break;
 				case 2:
-					spimode = CPOLfield | 0;
+					spimode[deviceno] = CPOLfield | 0;
 					break;
 				case 3:
-					spimode = CPOLfield | CPHAfield;
+					spimode[deviceno] = CPOLfield | CPHAfield;
 					break;
 				default:
 					error(Ebadctl);
@@ -552,7 +566,7 @@ bcmspiwrite(Chan *c, void *va, long n, vlong)
 		spirxoff[deviceno] = 0;
 		spirxlen[deviceno] = 0;
 		
-		SPI_WRITE(CLKreg, (u32int)6);
+		SPI_WRITE(CLKreg, (u32int)spiclockdiv[deviceno]);
 		
 		spitxlen[deviceno] = MIN(SPI_BUF_LEN, n);
 		//				D("WRite dev=%d n=%lud, off=%lud, len=%ud\n", deviceno, n, offset, spitxlen[deviceno]);
@@ -572,7 +586,7 @@ bcmspiwrite(Chan *c, void *va, long n, vlong)
 		
 		//				cs = SPI_READ(CSreg);
 		cs = 0;
-		cs |= spimode;
+		cs |= spimode[deviceno];
 		//				SPI_WRITE(CSreg, cs);
 		//				D("data mode: %x\n", SPI_READ(CSreg));
 		//
